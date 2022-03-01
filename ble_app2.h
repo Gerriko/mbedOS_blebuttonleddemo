@@ -1,7 +1,7 @@
 /* mbed Microcontroller Library
- * Copyright (c) 2006-2022 ARM Limited
+ * Core library Copyright (c) 2006-2022 ARM Limited
  * Library modified by C Gerrish (2022)
- * Added GattServer events
+ * Now with added enhancements, such as GattServer events
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,8 +68,6 @@ public:
      */
     void start(mbed::Callback<void(BLE&, events::EventQueue&)> post_init_cb)
     {
-        printf("Ble App started\r\n");
-
         _post_init_cb = post_init_cb;
 
         if (_ble.hasInitialized()) {
@@ -124,6 +122,11 @@ public:
             _gap_handler = ChainableGapEventHandler();
             _gatt_server_handler = ChainableGattServerEventHandler();
         });
+    }
+
+    void set_single_connection_only(bool SetSingle)
+    {
+        _single_connection_only = SetSingle;
     }
 
     /**
@@ -309,6 +312,45 @@ public:
         return true;
     }
 
+    /** Assign new byte values to the characteristic handle. */
+    bool updateCharacteristicByteValue(GattAttribute::Handle_t ValueHandle, const uint8_t *value, uint16_t size, bool local_only = false) const
+    {
+
+        ble_error_t error = _ble.gattServer().write(ValueHandle, value, size, local_only);
+
+        if (error) {
+            print_error(error, "Error updating CharacteristicValue.\r\n");
+            return false;
+        }
+        return true;
+    }
+
+    /** Assign new short values to the characteristic handle. */
+    bool updateCharacteristicShortValue(GattAttribute::Handle_t ValueHandle, uint16_t *value, uint16_t size, bool msb = true, bool local_only = false) const
+    {
+        
+        uint8_t u8vals[size*2];
+        if (msb) {
+            for (uint8_t i = 0; i < size; i++) {
+                u8vals[i*2] = value[i] >> 8;
+                u8vals[(i*2)+1] = value[i];
+            }
+        }
+        else {
+            for (uint8_t i = 0; i < size; i++) {
+                u8vals[i*2] = value[i];
+                u8vals[(i*2)+1] = value[i] >> 8;
+            }
+        }
+
+        ble_error_t error = _ble.gattServer().write(ValueHandle, (const uint8_t*)u8vals, size*2, local_only);
+
+        if (error) {
+            print_error(error, "Error updating CharacteristicValue.\r\n");
+            return false;
+        }
+        return true;
+    }
     
 
     /**
@@ -402,10 +444,7 @@ protected:
             print_error(event->error, "Error during the initialisation\r\n");
             return;
         }
-
-        printf("Ble instance initialized\r\n");
-
-        
+       
         _event_queue.call([this]() { _post_init_cb(_ble, _event_queue); });
 
         /* All calls are serialised on the user thread through the event queue */
@@ -419,9 +458,11 @@ protected:
     void onConnectionComplete(const ble::ConnectionCompleteEvent &event) override
     {
         _is_connecting = false;
+        
         if (event.getStatus() == BLE_ERROR_NONE) {
             _connected = true;
             _conn_handle = event.getConnectionHandle();
+            _ble.gap().stopAdvertising(_adv_handle);
 
             if (_post_connect_cb) {
                 _post_connect_cb(_ble, _event_queue, event);
@@ -566,8 +607,11 @@ protected:
     {
         ble_error_t error;
 
+        // Added new check for when only one connection allowed
+        if (_single_connection_only && _connected ) return;
+
         if (!_advertising_name || _ble.gap().isAdvertisingActive(_adv_handle)) {
-            /* we're already advertising */
+            /* we're already advertising or we are already connected */
             return;
         }
 
@@ -634,8 +678,6 @@ protected:
             print_error(error, "Gap::startAdvertising() failed\r\n");
             return;
         }
-
-        printf("Advertising as \"%s\"\r\n", _advertising_name);
     }
 
     /** scan for GattServer */
@@ -749,6 +791,7 @@ protected:
     bool _connected = false;
     bool _is_connecting = false;
     bool _is_scanning = false;
+    bool _single_connection_only = false;
 
     mbed::Callback<void(BLE&, events::EventQueue&)> _post_init_cb;
     mbed::Callback<void(BLE&, events::EventQueue&, const ble::ConnectionCompleteEvent &event)> _post_connect_cb;
